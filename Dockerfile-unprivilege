@@ -1,0 +1,72 @@
+# 使用 Ubuntu 作为基础镜像
+FROM ubuntu:20.04
+
+# 设置环境变量
+ENV HADOOP_VERSION=3.4.1 \
+    HADOOP_HOME=/home/hadoop/hadoop \
+    JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64/ \
+    PATH=$PATH:/home/hadoop/hadoop/bin:/home/hadoop/hadoop/sbin
+
+# 安装依赖（以 root 身份操作）
+RUN sed -i 's|http://archive.ubuntu.com/ubuntu/|http://mirrors.tuna.tsinghua.edu.cn/ubuntu/|g' /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y \
+        openjdk-8-jdk \
+        openssh-server \
+        sudo \
+        rsync \
+        vim \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建非特权用户 hadoop
+RUN useradd -m hadoop && \
+    echo "hadoop:hadoop" | chpasswd && \
+    usermod -aG sudo hadoop && \
+    echo "hadoop ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# 配置 SSH（以 root 身份操作）
+RUN mkdir -p /var/run/sshd && \
+    ssh-keygen -A && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+# 切换到 hadoop 用户配置 SSH 密钥
+USER hadoop
+RUN mkdir -p /home/hadoop/.ssh && \
+    ssh-keygen -t rsa -P '' -f /home/hadoop/.ssh/id_rsa && \
+    cat /home/hadoop/.ssh/id_rsa.pub >> /home/hadoop/.ssh/authorized_keys && \
+    chmod 600 /home/hadoop/.ssh/authorized_keys && \
+    echo "StrictHostKeyChecking no" >> /home/hadoop/.ssh/config
+
+# 安装 Hadoop
+USER root
+COPY hadoop-${HADOOP_VERSION}.tar.gz /tmp/
+RUN tar -xzf /tmp/hadoop-${HADOOP_VERSION}.tar.gz -C /home/hadoop && \
+    mv /home/hadoop/hadoop-${HADOOP_VERSION} ${HADOOP_HOME} && \
+    chown -R hadoop:hadoop ${HADOOP_HOME} && \
+    rm /tmp/hadoop-${HADOOP_VERSION}.tar.gz
+
+# 复制配置文件（需提前准备 core-site.xml 等）
+COPY core-site-unprivilege.xml ${HADOOP_HOME}/etc/hadoop/
+COPY hdfs-site-unprivilege.xml ${HADOOP_HOME}/etc/hadoop/
+COPY yarn-site.xml ${HADOOP_HOME}/etc/hadoop/
+RUN chown -R hadoop:hadoop ${HADOOP_HOME}/etc/hadoop
+
+# 创建数据目录并设置权限
+RUN mkdir -p /home/hadoop/hdfs/{namenode,datanode} && \
+    chown -R hadoop:hadoop /home/hadoop/hdfs
+
+# 启动脚本（以 root 启动 SSH，切换用户启动 Hadoop）
+COPY start-hadoop-unprivilege.sh /start.sh
+RUN chmod +x /start.sh
+
+RUN echo "export HADOOP_SSH_OPTS=\"-o SendEnv=JAVA_HOME\"" >> $HADOOP_HOME/etc/hadoop/hadoop-env.sh
+RUN echo "AcceptEnv JAVA_HOME" >> /etc/ssh/sshd_config
+RUN echo "export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64" >> /etc/profile && \
+    echo "export PATH=$PATH:$JAVA_HOME/bin" >> /etc/profile
+
+# 暴露端口
+EXPOSE 22 9870 8088 50070 50075 19888
+
+# 入口脚本
+CMD ["/start.sh"]
