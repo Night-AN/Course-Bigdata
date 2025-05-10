@@ -1,0 +1,140 @@
+services:
+  namenode:
+    image: apache/hadoop:3.4.1
+    container_name: namenode
+    hostname: namenode
+    user: root
+    environment:
+      - HADOOP_HOME=/opt/hadoop
+      - HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    volumes:
+      - ./namenode:/opt/hadoop/data/nameNode
+      - ./config:/opt/hadoop/etc/hadoop
+      - ./start-hdfs.sh:/start-hdfs.sh
+      - ./config/log4j.properties:/opt/hadoop/etc/hadoop/log4j.properties
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    command: [ "/bin/bash", "/start-hdfs.sh" ]
+    restart: always
+    networks:
+      hdfs_network:
+        ipv4_address: 172.30.0.2
+
+  datanode1:
+    image: apache/hadoop:3.4.1
+    container_name: datanode1
+    hostname: datanode1
+    user: root
+    environment:
+      - HADOOP_HOME=/opt/hadoop
+      - HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    volumes:
+      - ./datanode1:/opt/hadoop/data/dataNode
+      - ./config:/opt/hadoop/etc/hadoop
+      - ./init-datanode.sh:/init-datanode.sh
+      - ./config/log4j.properties:/opt/hadoop/etc/hadoop/log4j.properties
+    depends_on:
+      - namenode
+    command: [ "/bin/bash", "/init-datanode.sh" ]
+    restart: always
+    networks:
+      hdfs_network:
+        ipv4_address: 172.30.0.3
+
+  datanode2:
+    image: apache/hadoop:3.4.1
+    container_name: datanode2
+    hostname: datanode2
+    user: root
+    environment:
+      - HADOOP_HOME=/opt/hadoop
+      - HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    volumes:
+      - ./datanode2:/opt/hadoop/data/dataNode
+      - ./config:/opt/hadoop/etc/hadoop
+      - ./init-datanode.sh:/init-datanode.sh
+      - ./config/log4j.properties:/opt/hadoop/etc/hadoop/log4j.properties
+    depends_on:
+      - namenode
+    command: [ "/bin/bash", "/init-datanode.sh" ]
+    restart: always
+    networks:
+      hdfs_network:
+        ipv4_address: 172.30.0.4
+  
+  hiveserver2:
+    image: apache/hive:4.0.0
+    container_name: hiveserver2
+    hostname: hiveserver2
+    user: root
+    environment:
+      SERVICE_NAME: hiveserver2
+      HADOOP_NAMENODE: hdfs://namenode:9000
+      SERVICE_OPTS: "-Dhive.metastore.uris=thrift://metastore:9083"
+      IS_RESUME: "true"
+    ports:
+      - "10000:10000"
+      - "10002:10002"
+    volumes: 
+      - ./data:/data
+    depends_on:
+      - namenode
+      - datanode1
+      - datanode2
+      - metastore
+    networks:
+      hdfs_network:
+        ipv4_address: 172.30.0.5
+        
+  metastore:
+    image: apache/hive:4.0.0
+    container_name: metastore
+    hostname: metastore
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      SERVICE_OPTS: "-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres_db:5432/hive_metastore -Djavax.jdo.option.ConnectionUserName=hive -Djavax.jdo.option.ConnectionPassword=hive"
+    volumes:
+      - ./postgresql-42.5.1.jar:/opt/hive/lib/postgresql.jar
+    ports:
+      - "9083:9083"
+    depends_on:
+      - postgres_db
+    command: >
+        bash -c "
+        echo '等待PostgreSQL准备就绪...';
+        while ! nc -z postgres 5432; do sleep 2; done;
+        
+        echo '初始化数据库schema...';
+        /opt/hive/bin/schematool -dbType postgres -initSchema || echo 'Schema初始化可能已完成';
+        
+        echo '启动Metastore服务...';
+        /opt/hive/bin/start-metastore
+        "
+    networks:
+      hdfs_network:
+        ipv4_address: 172.30.0.6
+      
+  postgres_db:
+    image: postgres
+    container_name: postgres_db
+    hostname: postgres_db
+    environment:
+      - POSTGRES_PASSWORD=hive
+      - POSTGRES_USER=hive
+      - POSTGRES_DB=hive_metastore
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgresql-data:/var/lib/postgresql/data
+    networks:
+      hdfs_network:
+        ipv4_address: 172.30.0.7
+        
+networks:
+  hdfs_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
